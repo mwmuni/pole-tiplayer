@@ -85,7 +85,7 @@ let sseClients = new Map(); // For SSE connections
 
 // Server-side optimization variables
 let lastBroadcastTime = 0;
-const BROADCAST_INTERVAL = 50; // Broadcast every 50ms (20 FPS)
+const BROADCAST_INTERVAL = 100; // Broadcast every 100ms (10 FPS)
 let pendingBroadcast = false;
 
 // Server data usage tracking
