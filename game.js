@@ -39,8 +39,30 @@ let others = {};
 let ws;
 
 function connectWS() {
-    ws = new WebSocket(`ws://${location.hostname}:8080`);
-    ws.onopen = () => {};
+    // For Cloudflare deployment, always use wss when served over https
+    // Cloudflare will handle the SSL termination and proxy to your backend
+    const wsProtocol = location.protocol === 'https:' ? 'wss' : 'ws';
+    
+    console.log(`Attempting WebSocket connection: ${wsProtocol}://${location.host}/ws/`);
+    
+    // Try primary connection
+    ws = new WebSocket(`${wsProtocol}://${location.host}/ws/`);
+    
+    ws.onopen = () => {
+        console.log('WebSocket connected successfully');
+    };
+    
+    ws.onerror = (error) => {
+        console.error('WebSocket error:', error);
+        // If wss fails and we're on https, this might be a Cloudflare configuration issue
+        if (wsProtocol === 'wss') {
+            console.error('WSS connection failed. Possible causes:');
+            console.error('1. Cloudflare WebSockets not enabled');
+            console.error('2. Server not configured for HTTPS (use "Flexible" SSL mode)');
+            console.error('3. Backend server not running or not accessible');
+        }
+    };
+    
     ws.onmessage = e => {
         let data = JSON.parse(e.data);
         if (data.type === 'init') {
@@ -53,7 +75,12 @@ function connectWS() {
             }
         }
     };
-    ws.onclose = () => setTimeout(connectWS, 1000);
+    
+    ws.onclose = (event) => {
+        console.log('WebSocket disconnected. Code:', event.code, 'Reason:', event.reason);
+        console.log('Reconnecting in 2 seconds...');
+        setTimeout(connectWS, 2000);
+    };
 }
 connectWS();
 
