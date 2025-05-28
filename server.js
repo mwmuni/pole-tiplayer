@@ -28,13 +28,34 @@ if (useHTTPS) {
 }
 
 function requestHandler(req, res) {
-    // Serve static files except for /ws/
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    
+    // Handle Server-Sent Events endpoint
+    if (url.pathname === '/events') {
+        handleSSE(req, res);
+        return;
+    }
+    
+    // Handle player state updates
+    if (url.pathname === '/api/state' && req.method === 'POST') {
+        handleStateUpdate(req, res);
+        return;
+    }
+    
+    // Handle player connection
+    if (url.pathname === '/api/connect' && req.method === 'POST') {
+        handlePlayerConnect(req, res);
+        return;
+    }
+    
+    // Handle WebSocket endpoint (still keep for backwards compatibility)
     if (req.url === '/ws/' || req.url === '/ws') {
-        // Let 'upgrade' event handle WebSocket
         res.writeHead(426, { 'Content-Type': 'text/plain' });
         res.end('Upgrade Required');
         return;
     }
+    
+    // Serve static files
     let filePath = req.url.split('?')[0]; // Strip query string
     if (filePath === '/' || filePath === '') filePath = '/index.html';
     filePath = path.join(__dirname, filePath);
@@ -60,10 +81,201 @@ function requestHandler(req, res) {
 const wss = new WebSocket.Server({ noServer: true });
 
 let clients = new Map();
+let sseClients = new Map(); // For SSE connections
+
+// Server-side optimization variables
+let lastBroadcastTime = 0;
+const BROADCAST_INTERVAL = 50; // Broadcast every 50ms (20 FPS)
+let pendingBroadcast = false;
+
+// Server data usage tracking
+let totalBroadcastBytes = 0;
+let totalBroadcasts = 0;
+let lastServerStatsTime = Date.now();
 
 function randomColor() {
     return `hsl(${Math.floor(Math.random()*360)}, 80%, 60%)`;
 }
+
+// SSE handler
+function handleSSE(req, res) {
+    // Set headers for Server-Sent Events
+    res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Connection': 'keep-alive',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': 'Cache-Control',
+        'X-Accel-Buffering': 'no', // Disable nginx buffering
+        'Pragma': 'no-cache',
+        'Expires': '0'
+    });
+
+    const clientId = Math.random().toString(36).substr(2, 9);
+    const color = randomColor();
+    
+    const client = {
+        id: clientId,
+        color: color,
+        state: null,
+        res: res,
+        lastActivity: Date.now()
+    };
+    
+    sseClients.set(clientId, client);
+    
+    // Send initial data
+    res.write(`data: ${JSON.stringify({ type: 'init', id: clientId, color: color })}\n\n`);
+    
+    // Send periodic heartbeat to keep connection alive
+    const heartbeatInterval = setInterval(() => {
+        try {
+            res.write(`data: ${JSON.stringify({ type: 'heartbeat', timestamp: Date.now() })}\n\n`);
+        } catch (error) {
+            clearInterval(heartbeatInterval);
+            sseClients.delete(clientId);
+        }
+    }, 5000); // Send heartbeat every 5 seconds
+    
+    // Store heartbeat interval for cleanup
+    client.heartbeatInterval = heartbeatInterval;
+    
+    // Handle client disconnect
+    req.on('close', () => {
+        if (client.heartbeatInterval) {
+            clearInterval(client.heartbeatInterval);
+        }
+        sseClients.delete(clientId);
+        console.log(`SSE client ${clientId} disconnected`);
+    });
+    
+    req.on('error', () => {
+        if (client.heartbeatInterval) {
+            clearInterval(client.heartbeatInterval);
+        }
+        sseClients.delete(clientId);
+    });
+    
+    console.log(`SSE client ${clientId} connected`);
+}
+
+// Handle state updates via POST
+function handleStateUpdate(req, res) {
+    let body = '';
+    req.on('data', chunk => {
+        body += chunk.toString();
+    });
+    
+    req.on('end', () => {
+        try {
+            const data = JSON.parse(body);
+            const clientId = data.id;
+            
+            if (sseClients.has(clientId)) {
+                const client = sseClients.get(clientId);
+                client.state = data.state;
+                client.lastActivity = Date.now();
+                
+                // Schedule broadcast with rate limiting
+                scheduleBroadcast();
+            }
+            
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end('{"status":"ok"}');
+        } catch (error) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end('{"error":"invalid json"}');
+        }
+    });
+}
+
+function scheduleBroadcast() {
+    if (pendingBroadcast) return;
+    
+    const now = Date.now();
+    const timeSinceLastBroadcast = now - lastBroadcastTime;
+    
+    if (timeSinceLastBroadcast >= BROADCAST_INTERVAL) {
+        // Broadcast immediately
+        broadcastStates();
+    } else {
+        // Schedule broadcast for later
+        pendingBroadcast = true;
+        setTimeout(() => {
+            pendingBroadcast = false;
+            broadcastStates();
+        }, BROADCAST_INTERVAL - timeSinceLastBroadcast);
+    }
+}
+
+// Handle player connection
+function handlePlayerConnect(req, res) {
+    // This endpoint can be used for initial handshake if needed
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end('{"status":"connected"}');
+}
+
+function broadcastStates() {
+    const now = Date.now();
+    lastBroadcastTime = now;
+    
+    const allStates = Array.from(sseClients.values())
+        .map(c => ({ id: c.id, color: c.color, state: c.state }))
+        .filter(c => c.state);
+    
+    // Only broadcast if there are states to send
+    if (allStates.length === 0) return;
+    
+    const message = `data: ${JSON.stringify({ type: 'states', all: allStates })}\n\n`;
+    
+    // Track server data usage
+    totalBroadcastBytes += message.length * sseClients.size;
+    totalBroadcasts++;
+    
+    // Log server stats every 10 seconds
+    if (now - lastServerStatsTime > 10000) {
+        const avgBytesPerSecond = totalBroadcastBytes / 10;
+        console.log(`📡 Server broadcast: ${totalBroadcasts} broadcasts, ${totalBroadcastBytes} bytes, ${(avgBytesPerSecond/1024).toFixed(2)} KB/s`);
+        totalBroadcastBytes = 0;
+        totalBroadcasts = 0;
+        lastServerStatsTime = now;
+    }
+    
+    // Send to all SSE clients
+    const toRemove = [];
+    for (let [clientId, client] of sseClients) {
+        try {
+            client.res.write(message);
+        } catch (error) {
+            // Mark dead connections for removal
+            console.log(`Dead SSE connection detected: ${clientId}`);
+            if (client.heartbeatInterval) {
+                clearInterval(client.heartbeatInterval);
+            }
+            toRemove.push(clientId);
+        }
+    }
+    
+    // Remove dead connections
+    toRemove.forEach(clientId => sseClients.delete(clientId));
+}
+
+// Clean up inactive clients every 30 seconds
+setInterval(() => {
+    const now = Date.now();
+    for (let [clientId, client] of sseClients) {
+        if (now - client.lastActivity > 60000) { // 1 minute timeout
+            try {
+                if (client.heartbeatInterval) {
+                    clearInterval(client.heartbeatInterval);
+                }
+                client.res.end();
+            } catch (e) {}
+            sseClients.delete(clientId);
+            console.log(`Removed inactive SSE client ${clientId}`);
+        }
+    }
+}, 30000);
 
 server.on('upgrade', (req, socket, head) => {
     if (req.url === '/ws/' || req.url === '/ws') {
@@ -102,12 +314,8 @@ wss.on('connection', ws => {
 });
 
 server.listen(useHTTPS ? HTTPS_PORT : PORT, () => {
-    console.log(`WebSocket server running on port ${useHTTPS ? HTTPS_PORT : PORT}`);
-    console.log(`Origin protocol: ${useHTTPS ? 'HTTPS' : 'HTTP'}`);
-    if (useHTTPS) {
-        console.log(`Local access: wss://localhost:${HTTPS_PORT}/ws/`);
-    } else {
-        console.log(`Local access: ws://localhost:${PORT}/ws/`);
-        console.log(`When accessed via Cloudflare (HTTPS): wss://your-domain.com/ws/ (proxied to http://localhost:${PORT}/ws/)`);
-    }
+    console.log(`🚀 Server running on ${useHTTPS ? 'HTTPS' : 'HTTP'} port ${useHTTPS ? HTTPS_PORT : PORT}`);
+    console.log(`📡 WebSocket endpoint: ${useHTTPS ? 'wss' : 'ws'}://localhost:${useHTTPS ? HTTPS_PORT : PORT}/ws`);
+    console.log(`🔄 SSE endpoint: ${useHTTPS ? 'https' : 'http'}://localhost:${useHTTPS ? HTTPS_PORT : PORT}/events`);
+    console.log(`⚡ Optimized for reduced data usage - max 20 FPS updates`);
 });

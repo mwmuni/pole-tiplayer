@@ -36,59 +36,209 @@ canvas.addEventListener('mousemove', e => {
 let myId = null;
 let myColor = '#FFD700';
 let others = {};
-let ws;
+let eventSource;
+let connectionType = 'SSE'; // Changed from WebSocket to SSE
+let lastHeartbeat = Date.now();
+let connectionAttempts = 0;
+let maxReconnectDelay = 30000; // Max 30 seconds between reconnects
 
-function connectWS() {
-    // For Cloudflare deployment, always use wss when served over https
-    // Cloudflare will handle the SSL termination and proxy to your backend
-    const wsProtocol = location.protocol === 'https:' ? 'wss' : 'ws';
+// Optimization variables
+let lastSentState = null;
+let lastSendTime = 0;
+const SEND_INTERVAL = 50; // Send every 50ms (20 FPS instead of 60)
+const MOVEMENT_THRESHOLD = 2; // Minimum movement to trigger update
+const PRECISION = 1; // Round to 1 decimal place
+
+// Rollback netcode variables
+const STATE_HISTORY_SIZE = 120; // 2 seconds at 60 FPS
+let stateHistory = []; // Local state history for rollback
+let confirmedStates = new Map(); // Server-confirmed states by timestamp
+let inputHistory = []; // Input history for replay
+let currentFrame = 0;
+let lastConfirmedFrame = 0;
+
+// Data usage tracking
+let totalBytesSent = 0;
+let totalMessagesSent = 0;
+let lastStatsTime = Date.now();
+
+function connectSSE() {
+    connectionAttempts++;
+    const delay = Math.min(1000 * Math.pow(2, connectionAttempts - 1), maxReconnectDelay);
     
-    console.log(`Attempting WebSocket connection: ${wsProtocol}://${location.host}/ws/`);
+    console.log(`🔄 Attempting SSE connection (attempt ${connectionAttempts}): ${location.protocol}//${location.host}/events`);
+    console.log(`Page loaded via: ${location.protocol}//${location.host}`);
     
-    // Try primary connection
-    ws = new WebSocket(`${wsProtocol}://${location.host}/ws/`);
+    // Close existing connection if any
+    if (eventSource) {
+        eventSource.close();
+        eventSource = null;
+    }
     
-    ws.onopen = () => {
-        console.log('WebSocket connected successfully');
+    // Create new EventSource connection
+    eventSource = new EventSource('/events');
+    
+    eventSource.onopen = () => {
+        console.log('✅ SSE connected successfully!');
+        console.log('Connection type: Server-Sent Events + AJAX');
+        connectionAttempts = 0; // Reset attempts on successful connection
+        lastHeartbeat = Date.now();
     };
     
-    ws.onerror = (error) => {
-        console.error('WebSocket error:', error);
-        // If wss fails and we're on https, this might be a Cloudflare configuration issue
-        if (wsProtocol === 'wss') {
-            console.error('WSS connection failed. Possible causes:');
-            console.error('1. Cloudflare WebSockets not enabled');
-            console.error('2. Server not configured for HTTPS (use "Flexible" SSL mode)');
-            console.error('3. Backend server not running or not accessible');
-        }
+    eventSource.onerror = (error) => {
+        console.error('❌ SSE error:', error);
+        console.error('SSE ready state:', eventSource?.readyState);
+        
+        // Always try to reconnect on error
+        eventSource.close();
+        eventSource = null;
+        myId = null; // Reset ID so we get a new one
+        
+        console.log(`🔌 SSE connection failed, reconnecting in ${delay/1000}s...`);
+        setTimeout(connectSSE, delay);
     };
     
-    ws.onmessage = e => {
-        let data = JSON.parse(e.data);
-        if (data.type === 'init') {
-            myId = data.id;
-            myColor = data.color;
-        } else if (data.type === 'states') {
-            others = {};
-            for (let c of data.all) {
-                if (c.id !== myId) others[c.id] = c;
+    eventSource.onmessage = (event) => {
+        try {
+            lastHeartbeat = Date.now();
+            let data = JSON.parse(event.data);
+            if (data.type === 'init') {
+                myId = data.id;
+                myColor = data.color;
+                console.log(`🎮 Player initialized: ID=${myId}, Color=${myColor}`);
+            } else if (data.type === 'states') {
+                others = {};
+                for (let c of data.all) {
+                    if (c.id !== myId) {
+                        // Decompress the state data
+                        if (c.state && c.state.m && c.state.p) {
+                            others[c.id] = {
+                                ...c,
+                                state: {
+                                    mouse: { x: c.state.m.x, y: c.state.m.y },
+                                    pole: { 
+                                        x: c.state.p.x, 
+                                        y: c.state.p.y,
+                                        vx: c.state.p.vx || 0,
+                                        vy: c.state.p.vy || 0
+                                    }
+                                }
+                            };
+                        } else {
+                            others[c.id] = c;
+                        }
+                    }
+                }
             }
+        } catch (error) {
+            console.error('Error parsing SSE message:', error);
         }
-    };
-    
-    ws.onclose = (event) => {
-        console.log('WebSocket disconnected. Code:', event.code, 'Reason:', event.reason);
-        console.log('Reconnecting in 2 seconds...');
-        setTimeout(connectWS, 2000);
     };
 }
-connectWS();
 
-function sendState() {
-    if (ws && ws.readyState === 1) {
-        ws.send(JSON.stringify({ type: 'state', state: {
-            mouse, pole
-        }}));
+// Heartbeat monitor - check if connection is still alive
+setInterval(() => {
+    const timeSinceLastMessage = Date.now() - lastHeartbeat;
+    if (timeSinceLastMessage > 10000) { // No message for 10 seconds
+        console.log('💔 SSE connection appears dead, forcing reconnect...');
+        if (eventSource) {
+            eventSource.close();
+            eventSource = null;
+        }
+        myId = null;
+        connectSSE();
+    }
+}, 5000); // Check every 5 seconds
+
+// Start SSE connection
+connectSSE();
+
+function roundValue(value) {
+    return Math.round(value * Math.pow(10, PRECISION)) / Math.pow(10, PRECISION);
+}
+
+function hasSignificantMovement(newState, oldState) {
+    if (!oldState) return true;
+    
+    const dx = Math.abs(newState.mouse.x - oldState.mouse.x);
+    const dy = Math.abs(newState.mouse.y - oldState.mouse.y);
+    const pdx = Math.abs(newState.pole.x - oldState.pole.x);
+    const pdy = Math.abs(newState.pole.y - oldState.pole.y);
+    
+    return dx > MOVEMENT_THRESHOLD || dy > MOVEMENT_THRESHOLD || 
+           pdx > MOVEMENT_THRESHOLD || pdy > MOVEMENT_THRESHOLD;
+}
+
+function compressState() {
+    // Use shorter property names and round values to reduce data size
+    return {
+        m: { // mouse
+            x: roundValue(mouse.x),
+            y: roundValue(mouse.y)
+        },
+        p: { // pole
+            x: roundValue(pole.x),
+            y: roundValue(pole.y),
+            vx: roundValue(pole.vx),
+            vy: roundValue(pole.vy)
+        }
+    };
+}
+
+async function sendState() {
+    if (!myId) return;
+    
+    const now = Date.now();
+    // Rate limiting: only send updates every SEND_INTERVAL ms
+    if (now - lastSendTime < SEND_INTERVAL) return;
+    
+    const currentState = compressState();
+    
+    // Only send if there's significant movement
+    if (!hasSignificantMovement(
+        { mouse: { x: currentState.m.x, y: currentState.m.y }, 
+          pole: { x: currentState.p.x, y: currentState.p.y } },
+        lastSentState ? 
+          { mouse: { x: lastSentState.m.x, y: lastSentState.m.y }, 
+            pole: { x: lastSentState.p.x, y: lastSentState.p.y } } : 
+          null
+    )) {
+        return;
+    }
+    
+    try {
+        const payload = JSON.stringify({
+            id: myId,
+            state: currentState
+        });
+        
+        const response = await fetch('/api/state', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: payload
+        });
+        
+        if (response.ok) {
+            lastSentState = currentState;
+            lastSendTime = now;
+            
+            // Track data usage
+            totalBytesSent += payload.length;
+            totalMessagesSent++;
+            
+            // Log stats every 10 seconds
+            if (now - lastStatsTime > 10000) {
+                const avgBytesPerSecond = totalBytesSent / ((now - (lastStatsTime - 10000)) / 1000);
+                console.log(`📊 Data usage: ${totalMessagesSent} msgs, ${totalBytesSent} bytes, ${(avgBytesPerSecond/1024).toFixed(2)} KB/s`);
+                lastStatsTime = now;
+            }
+        } else {
+            console.warn('Failed to send state:', response.status);
+        }
+    } catch (error) {
+        console.warn('Error sending state:', error);
     }
 }
 
