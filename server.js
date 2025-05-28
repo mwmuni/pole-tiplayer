@@ -2,7 +2,7 @@
 // Run with: node server.js
 
 import 'dotenv/config'; // For process.env variables
-import WebSocket from 'ws';
+import { WebSocketServer } from 'ws'; // Uncommented WebSocketServer
 import http from 'http';
 import https from 'https';
 import fs from 'fs';
@@ -86,9 +86,11 @@ function requestHandler(req, res) {
     });
 }
 
-const wss = new WebSocket.Server({ noServer: true });
+// const wss = new WebSocketServer({ noServer: true }); // This line was previously commented out
+const wss = new WebSocketServer({ noServer: true }); // Make sure this is uncommented
 
-const netServer = new Net(wss, true); // Pass the WebSocket server instance, true for isServer
+// const netServer = new Net(wss, true); // Pass the WebSocket server instance, true for isServer // This line was previously commented out
+const netServer = new Net(wss, true); // Make sure this is uncommented
 // const makeWorld = () => new MyWorld(); // Server doesn't need getLocalAnetId, MyWorld constructor handles null/undefined
 const serverWorldInstance = new MyWorld(); // Create one instance for the server
 const sgConfig = makeConfig(); // Use default config for now
@@ -101,7 +103,7 @@ let sseClients = new Map(); // For SSE connections
 
 // Server-side optimization variables
 let lastBroadcastTime = 0;
-const BROADCAST_INTERVAL = 50; // Broadcast every 50ms (20 FPS)
+const BROADCAST_INTERVAL = 100; // Broadcast every 100ms (10 FPS)
 let pendingBroadcast = false;
 
 // Server data usage tracking

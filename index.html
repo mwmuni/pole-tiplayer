@@ -4,6 +4,15 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Pole Physics Game</title>
+    <script type="importmap">
+    {
+      "imports": {
+        "@hastearcade/snowglobe": "/node_modules/@hastearcade/snowglobe/lib/dist/esm/index.js",
+        "@hastearcade/snowglobe/": "/node_modules/@hastearcade/snowglobe/",
+        "csv-writer": "https://esm.sh/csv-writer@1.6.0"
+      }
+    }
+    </script>
     <style>
         html, body { height: 100%; margin: 0; padding: 0; overflow: hidden; background: #222; }
         canvas { display: block; margin: 0 auto; background: #333; }
@@ -11,6 +20,6 @@
 </head>
 <body>
     <canvas id="gameCanvas"></canvas>
-    <script type="module" src="game.js?v=14"></script>
+    <script type="module" src="game.js?v=18"></script>
 </body>
 </html>
