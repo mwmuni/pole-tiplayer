@@ -1,15 +1,20 @@
 // Simple WebSocket server for multiplayer pole game
 // Run with: node server.js
 
-require('dotenv').config();
-const WebSocket = require('ws');
-const http = require('http');
-const https = require('https');
-const { Server: SnowglobeServer, makeConfig } = require('@hastearcade/snowglobe');
-const { MyWorld } = require('./src/my-world.js');
-const { Net } = require('./src/net-resource.js');
-const fs = require('fs');
-const path = require('path');
+import 'dotenv/config'; // For process.env variables
+import WebSocket from 'ws';
+import http from 'http';
+import https from 'https';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+import { Server as SnowglobeServer, makeConfig } from '@hastearcade/snowglobe';
+import { MyWorld } from './src/my-world.js';
+import { Net } from './src/net-resource.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const PORT = process.env.PORT || 8080;
 const HTTPS_PORT = process.env.HTTPS_PORT || 8443;
