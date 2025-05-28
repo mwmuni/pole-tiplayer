@@ -3,3 +3,4 @@ key.pem
 .env.*
 *.log
 cloudflare-api-key.txt
+node_modules/
