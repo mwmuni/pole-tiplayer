@@ -1,4 +1,5 @@
 {
+  "type": "module",
   "dependencies": {
     "@hastearcade/snowglobe": "^0.4.15",
     "dotenv": "^16.5.0",

@@ -1,23 +1,9 @@
-// Assuming Snowglobe and your src files are bundled or accessible as modules
-// If not, these might need to be global or accessed differently.
-// For now, let's assume a module environment for clarity.
-// import { Client as SnowglobeClient, makeConfig } from '@hastearcade/snowglobe'; // Or from where snowglobe is accessible
-// import { MyWorld } from './src/my-world.js';
-// import { Net } from './src/net-resource.js';
-// import { createCommand } from './src/my-command.js';
-// import { interpolate } from './src/my-display-state.js'; // Assuming interpolate is exported here
-
-// Assuming Snowglobe and your src files are bundled or accessible as modules.
-// These would be actual imports in a module system:
-// import { Client as SnowglobeClient, makeConfig } from '@hastearcade/snowglobe';
-// import { MyWorld, POLE_LENGTH, POLE_WIDTH, GRAVITY, DAMPING } from './src/my-world.js'; // POLE_WIDTH needed for draw
-// import { Net } from './src/net-resource.js';
-// import { createMouseMoveCommand, CommandType } from './src/my-command.js';
-// import { interpolate } from './src/my-display-state.js';
-
-// For the tool environment, assume these are available if not explicitly imported by path.
-// We'll use them as if they are: SnowglobeClient, makeConfig, MyWorld, Net, 
-// createMouseMoveCommand, CommandType, interpolate, POLE_WIDTH.
+import { Client as SnowglobeClient, makeConfig } from '@hastearcade/snowglobe';
+// POLE_LENGTH, GRAVITY, DAMPING are used internally by MyWorld. POLE_WIDTH is used by draw().
+import { MyWorld, POLE_WIDTH } from './src/my-world.js'; 
+import { Net } from './src/net-resource.js';
+import { createMouseMoveCommand, CommandType } from './src/my-command.js';
+import { interpolate } from './src/my-display-state.js';
 
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
