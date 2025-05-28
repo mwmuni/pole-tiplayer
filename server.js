@@ -5,6 +5,9 @@ require('dotenv').config();
 const WebSocket = require('ws');
 const http = require('http');
 const https = require('https');
+const { Server: SnowglobeServer, makeConfig } = require('@hastearcade/snowglobe');
+const { MyWorld } = require('./src/my-world.js');
+const { Net } = require('./src/net-resource.js');
 const fs = require('fs');
 const path = require('path');
 
@@ -80,7 +83,15 @@ function requestHandler(req, res) {
 
 const wss = new WebSocket.Server({ noServer: true });
 
-let clients = new Map();
+const netServer = new Net(wss, true); // Pass the WebSocket server instance, true for isServer
+// const makeWorld = () => new MyWorld(); // Server doesn't need getLocalAnetId, MyWorld constructor handles null/undefined
+const serverWorldInstance = new MyWorld(); // Create one instance for the server
+const sgConfig = makeConfig(); // Use default config for now
+// sgConfig.lagCompensation = false; // Example: Disable lag compensation if desired initially
+// sgConfig.maxPredictionFrames = 10; // Example
+const snowglobeServer = new SnowglobeServer(serverWorldInstance, sgConfig, 0); // 0 is conventional serverAnetId
+
+// let clients = new Map(); // Replaced by netServer.clients
 let sseClients = new Map(); // For SSE connections
 
 // Server-side optimization variables
@@ -287,35 +298,34 @@ server.on('upgrade', (req, socket, head) => {
     }
 });
 
-wss.on('connection', ws => {
-    const id = Math.random().toString(36).substr(2, 9);
-    const color = randomColor();
-    clients.set(ws, { id, color, state: null });
-    ws.send(JSON.stringify({ type: 'init', id, color }));
+// The old wss.on('connection', ...) block, previously here, is now entirely removed.
+// WebSocket connections are handled by the `Net` class instance (`netServer`)
+// which is passed the `wss` object upon instantiation.
+// The `netServer` handles 'connection' events from `wss` internally.
 
-    ws.on('message', msg => {
-        let data;
-        try { data = JSON.parse(msg); } catch { return; }
-        if (data.type === 'state') {
-            clients.get(ws).state = data.state;
-            // Broadcast all states to everyone
-            const allStates = Array.from(clients.values()).map(c => ({ id: c.id, color: c.color, state: c.state })).filter(c => c.state);
-            for (let client of clients.keys()) {
-                if (client.readyState === WebSocket.OPEN) {
-                    client.send(JSON.stringify({ type: 'states', all: allStates }));
-                }
-            }
-        }
-    });
+// Game Loop for Snowglobe
+const GAME_TICK_RATE = 60; // Hz
+const TICK_INTERVAL_MS = 1000 / GAME_TICK_RATE;
+let lastTickTime = Date.now();
 
-    ws.on('close', () => {
-        clients.delete(ws);
-    });
-});
+function gameLoop() {
+    const now = Date.now();
+    const deltaSeconds = (now - lastTickTime) / 1000;
+    lastTickTime = now;
+
+    // Update Snowglobe server
+    // The netServer instance allows Snowglobe to receive incoming messages and send outgoing ones.
+    snowglobeServer.update(deltaSeconds, now / 1000, netServer);
+    
+    // Snowglobe's server.update() will call netServer.send() for snapshots/reliable messages.
+    // It will also process messages queued in netServer.messageQueue via netServer.receive().
+}
+
+setInterval(gameLoop, TICK_INTERVAL_MS);
 
 server.listen(useHTTPS ? HTTPS_PORT : PORT, () => {
     console.log(`🚀 Server running on ${useHTTPS ? 'HTTPS' : 'HTTP'} port ${useHTTPS ? HTTPS_PORT : PORT}`);
-    console.log(`📡 WebSocket endpoint: ${useHTTPS ? 'wss' : 'ws'}://localhost:${useHTTPS ? HTTPS_PORT : PORT}/ws`);
-    console.log(`🔄 SSE endpoint: ${useHTTPS ? 'https' : 'http'}://localhost:${useHTTPS ? HTTPS_PORT : PORT}/events`);
-    console.log(`⚡ Optimized for reduced data usage - max 20 FPS updates`);
+    console.log(`🔄 Snowglobe integrated with WebSocket endpoint: ${useHTTPS ? 'wss' : 'ws'}://localhost:${useHTTPS ? HTTPS_PORT : PORT}/ws`);
+    console.log(`🔄 SSE endpoint: ${useHTTPS ? 'https' : 'http'}://localhost:${useHTTPS ? HTTPS_PORT : PORT}/events`); // Kept as per instructions
+    console.log(`⚡ Game loop running at ${GAME_TICK_RATE} Hz.`);
 });
